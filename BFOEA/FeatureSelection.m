@@ -1,7 +1,7 @@
 classdef FeatureSelection < PROBLEM
-% <multi> <real/binary> <sparse/none>
-% The feature selection problem
-% dataNo --- 1 --- Number of dataset
+% <multi> <real/binary> <sparse/none> <constrained>
+% The feature selection problem with balance accuracy calculation
+% dataNo --- 20 --- Number of dataset
 % encode --- 1 --- Encoding method
 % ObjectiveNo --- 2 --- Number of objectives
 
@@ -95,13 +95,15 @@ classdef FeatureSelection < PROBLEM
         Category;   % Output label set
         indices;
         dataNo;
+        ValidationNum;
+        K;          % The number of nearest neighbor in KNN
     end
     methods
         %% Default settings of the problem
         function Setting(obj)
             [dataNo, encode, objectiveNo] = obj.ParameterSet(1, 1, 2);
             addpath(genpath('FSdata'));
-            % Load data
+            %% Load data
             str = {'Glass.mat',      'Wine.mat',          'Leaf.mat',              'Australian.mat',       'Zoo.mat',...
                 'Lymph.mat',            'Vehicle.mat',       'ImageSegmentation.mat', 'Parkinson.mat',        'Spect.mat',...
                 'German.mat',           'LedDisplay.mat',    'WallRobot.mat',         'WBCD.mat',             'GuesterPhase.mat',...
@@ -121,20 +123,21 @@ classdef FeatureSelection < PROBLEM
             obj.dataNo = dataNo;
 
             %rng(0);   %Fixed random number seed
-            %rnd    = randperm(size(Data.Y, 1));
-            %Data.Y = Data.Y(rnd, :);
-            %Data.X = Data.X(rnd, :);
             
-            Fmin = min(Data.X, [], 1);
-            Fmax = max(Data.X, [], 1);
+            %% Normalize the input data
+            Fmin         = min(Data.X, [], 1);
+            Fmax         = max(Data.X, [], 1);
             Data.X       = (Data.X - repmat(Fmin, size(Data.X, 1), 1))./repmat(Fmax - Fmin, size(Data.X, 1), 1);
             obj.Category = unique(Data.Y);
+            %% Divide the training set and test set
             obj.TrainIn  = Data.X(1:ceil(end*0.7), 1:end);
             obj.TrainOut = Data.Y(1:ceil(end*0.7), 1:end);
             obj.ValidIn  = Data.X(ceil(end*0.7)+1:end, 1:end);
             obj.ValidOut = Data.Y(ceil(end*0.7)+1:end, 1:end);
-            obj.indices = crossvalind('Kfold', size(obj.TrainIn,1), 10);     % Produce 10 folds 
-            % Parameter setting
+            obj.ValidationNum = 5;   % Produce 5 folds 
+            obj.indices  = crossvalind('Kfold', size(obj.TrainIn,1), obj.ValidationNum);     % Produce 5 folds 
+            obj.K        = 5;   % The number of nearest neighbor in KNN
+            % Number of objectives and features
             obj.M        = objectiveNo;
             obj.D        = size(obj.TrainIn, 2);
             switch encode
@@ -143,57 +146,69 @@ classdef FeatureSelection < PROBLEM
                 case 2
                     obj.encoding = 'real';
                     obj.lower    = zeros(1, obj.D);
-                    obj.upper    = ones(1, obj.D);
+                    obj.upper    = ones( 1, obj.D);
             end
         end
         %% Calculate objective values
         function PopObj = CalObj(obj, PopDec)
             PopObj  = zeros(size(PopDec, 1), obj.M);
-            K       = 5;     % The number of nearest neighbor in KNN
-            if sum(PopDec(1,:),2)<=obj.D
+            if max(sum(PopDec, 2)) <= obj.D   % To judge whether in the training set or the test set
                 %%%%% For training set %%%%%
-                theta = 0.5;
-                PopDec(PopDec < theta) = 0 ;
+                theta = 0.5;     % The threshold to determine whether a feature is selected or discarded
+                PopDec(PopDec < theta)  = 0 ;
                 PopDec(PopDec >= theta) = 1;
-                PopDec = logical(PopDec);
-                %[m, ~]  = size(obj.TrainIn);               % m is the number of training instance
-                indices = obj.indices;     % Produce 10 folds                         
+                PopDec = logical(PopDec);                 
                 for i = 1 : size(PopObj,1)
-                    sumErrorRatio = 0;
-                    for j = 1:10                           % 10-fold cross validation
-                        test     = (indices == j);           % 逻辑判断，每次循环选取一个fold作为测试集 
+                    sumAccuracyRatio = 0;
+                    for j = 1:obj.ValidationNum                  % l-fold cross validation
+                        test     = (obj.indices == j);           % 逻辑判断，每次循环选取一个fold作为测试集 
                         train    =~ test;                
                         TrainInsub  = obj.TrainIn(train, :);  
                         TrainOutsub = obj.TrainOut(train, :); 
-                        ValidInsub = obj.TrainIn(test, :); 
+                        ValidInsub  = obj.TrainIn(test, :); 
                         ValidOutsub = obj.TrainOut(test, :);
                         [~, Rank] = sort(pdist2(ValidInsub(:, PopDec(i, :)), TrainInsub(:, PopDec(i, :))), 2);
-                        [~, Out]  = max(hist(double(TrainOutsub(Rank(:, 1:K))'), double(obj.Category)), [], 1);
-                        Out      = obj.Category(Out);
-                        sumErrorRatio   = sumErrorRatio + mean(Out~=ValidOutsub);
+                        [~, Out]  = max(hist(double(TrainOutsub(Rank(:, 1:obj.K))'), double(obj.Category)), [], 1);
+                        Out       = obj.Category(Out);
+                        BalanceAccuracy = 0;
+                        for t = 0:size(obj.Category, 1)-1
+                            index = Out==t;
+                            if sum(index) > 0
+                                BalanceAccuracy = BalanceAccuracy + mean(Out(index)==ValidOutsub(index));
+                            end
+                        end
+                        sumAccuracyRatio   = sumAccuracyRatio + BalanceAccuracy./size(obj.Category, 1);
                     end
-                    errorRatio = sumErrorRatio./10;
+                    AccuracyRatio = sumAccuracyRatio./obj.ValidationNum;
+                    errorRatio    = 1 - AccuracyRatio;
                     switch obj.M
-                        case 1
+                        case 1    % Single-objective feature selection
                             alpha = 1e-6;
                             PopObj(i, 1) = errorRatio.*(1-alpha) + mean(PopDec(i, :)).*alpha;
-                        case 2
+                        case 2    % Bi-objective feature selection
                             PopObj(i, 1) = errorRatio;
                             PopObj(i, 2) = mean(PopDec(i, :));
                     end
                 end 
             else
                 %%%%% For test set %%%%%
-                PopDec = PopDec./10000;
-                PopDec  = logical(round(PopDec));
+                PopDec = logical(round(PopDec./10000));   % To judge whether in the training set or the test set
                 for i = 1 : size(PopObj, 1)
                     [~, Rank] = sort(pdist2(obj.ValidIn(:, PopDec(i, :)), obj.TrainIn(:, PopDec(i, :))), 2);
-                    [~, Out]  = max(hist(double(obj.TrainOut(Rank(:, 1:K)))', double(obj.Category)), [], 1);
+                    [~, Out]  = max(hist(double(obj.TrainOut(Rank(:, 1:obj.K)))', double(obj.Category)), [], 1);
                     Out       = obj.Category(Out);
+                    BalancedAccuracy = 0;
+                    for t = 0:size(obj.Category, 1)-1
+                        index = Out==t;
+                        if sum(index) > 0
+                            BalancedAccuracy = BalancedAccuracy + mean(Out(index)==obj.ValidOut(index));
+                        end
+                    end
+                    BalancedError = 1 - BalancedAccuracy./size(obj.Category, 1);
                     if obj.M ==1
-                        PopObj(i, 1) = -(1 - mean(Out~=obj.ValidOut));
+                        PopObj(i, 1) = -BalancedAccuracy./size(obj.Category, 1);  % Maximize the classification accuracy
                     elseif obj.M == 2
-                        PopObj(i, 1) = mean(Out~=obj.ValidOut);
+                        PopObj(i, 1) = BalancedError;
                         PopObj(i, 2) = mean(PopDec(i, :));
                     else
                         disp('Input error: No such setting!');
@@ -201,8 +216,20 @@ classdef FeatureSelection < PROBLEM
                 end 
             end
         end
+        
+        %% Calculate constraints
+        function PopCon = CalCon(obj, PopDec)
+            PopObj      = obj.CalObj(PopDec);
+            ind         = ones(1, obj.D);   % The feature subset that select all features
+            [~, Rank]   = sort(pdist2(obj.TrainIn(:, ind), obj.TrainIn(:, ind)), 2);
+            [~, Out]    = max(hist(double(obj.TrainOut(Rank(:, 1:obj.K))'), double(obj.Category)), [], 1);
+            Acc         = mean(obj.Category(Out)==obj.TrainOut);
+            Err         = 1 - Acc;
+            PopCon(:,1) = PopObj(:,1) - Err; % The classification error should smaller than that of using all features
+        end
+        
         %% Generate points on the Pareto front
-%         function R = GetOptimum(obj,N)
+%         function R = GetOptimum(obj, N)
 %             %addpath(genpath('scripts'));
 %             dataNo = obj.dataNo;
 %             fullfile = ['FS_', num2str(dataNo), '.mat'];
@@ -210,8 +237,8 @@ classdef FeatureSelection < PROBLEM
 %             R = P.NDpoints;
 %         end 
         %% Display a population in the objective space
-        function DrawObj(obj,Population)
-            Draw(Population.objs,{'Classification error rate','Selected feature ratio',[]});
+        function DrawObj(obj, Population)
+            Draw(Population.objs, {'Classification error rate', 'Selected feature ratio', []});
         end 
     end
 end
