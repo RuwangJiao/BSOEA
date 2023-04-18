@@ -14,9 +14,9 @@ function [Population, FrontNo, CrowdDis, NDsolutions] = EnvironmentalSelection(P
     niche = zeros(size(Population.objs, 1), 1);
     for i = 1:size(Population.objs, 1)
         for j = i+1:size(Population.objs, 1)
-            genes_i = Population(i).decs;
-            genes_j = Population(j).decs;
-            aDist = pdist2(round(genes_i), round(genes_j), "hamming");
+            ind_i = Population(i).decs;
+            ind_j = Population(j).decs;
+            aDist = pdist2(round(ind_i), round(ind_j), "hamming");
             if aDist < radius
                 niche(i) = niche(i) + (1-aDist./radius);
                 niche(j) = niche(j) + (1-aDist./radius);
